@@ -34,6 +34,8 @@ public class FFmpegAssetTrack: MediaPlayerTrack {
     var subtitle: SyncPlayerItemTrack<SubtitleFrame>?
     /// Shared with `SubtitleDecode` when libass image rendering is enabled.
     var assRenderer: AssImageRenderer?
+    /// Last emitted libass `SubtitlePart` (reused while the bitmap is unchanged).
+    var assSubtitlePart: SubtitlePart?
     // video
     public private(set) var rotation: Int16 = 0
     public var dovi: DOVIDecoderConfigurationRecord?

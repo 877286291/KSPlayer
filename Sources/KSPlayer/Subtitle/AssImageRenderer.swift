@@ -15,19 +15,29 @@ import UIKit
 import AppKit
 #endif
 
+/// One composited ASS frame (dirty-rect image + placement in the render canvas).
+struct AssRenderOutput {
+    let image: UIImage
+    let origin: CGPoint
+    let canvasSize: CGSize
+}
+
 /// Renders ASS/SSA events to `UIImage` via libass.
 ///
 /// Incomplete libass handle types are imported as `OpaquePointer`.
 final class AssImageRenderer {
+    /// Cap longest side so 4K sources don't allocate/blend huge bitmaps on the UI tick.
+    static var maxRenderSide = 1280
+
     private var library: OpaquePointer?
     private var renderer: OpaquePointer?
     private var track: UnsafeMutablePointer<ASS_Track>?
     private let lock = NSLock()
-    private var frameWidth = 1920
-    private var frameHeight = 1080
+    private var frameWidth = 1280
+    private var frameHeight = 720
     private var videoSizeSet = false
     private var readOrder: Int32 = 0
-    private var cachedImage: UIImage?
+    private var cachedOutput: AssRenderOutput?
 
     init?(fontsDirectory: String?, defaultFontPath: String?) {
         guard let library = ass_library_init() else { return nil }
@@ -73,7 +83,7 @@ final class AssImageRenderer {
             ass_library_done(library)
             self.library = nil
         }
-        cachedImage = nil
+        cachedOutput = nil
     }
 
     /// Feed Matroska CodecPrivate / script header.
@@ -91,21 +101,22 @@ final class AssImageRenderer {
         {
             applyPlayRes(from: header)
         }
-        cachedImage = nil
+        cachedOutput = nil
     }
 
-    /// Prefer video pixel size for storage/frame when known.
+    /// Prefer video pixel size for storage/frame when known (capped).
     func setVideoSize(_ size: CGSize) {
         let w = Int(size.width.rounded())
         let h = Int(size.height.rounded())
         guard w > 0, h > 0 else { return }
         lock.lock()
         defer { lock.unlock() }
-        frameWidth = w
-        frameHeight = h
+        let capped = Self.cappedSize(width: w, height: h)
+        frameWidth = capped.0
+        frameHeight = capped.1
         videoSizeSet = true
         applyFrameSize()
-        cachedImage = nil
+        cachedOutput = nil
     }
 
     func processChunk(_ event: String, startMS: Int64, durationMS: Int64) {
@@ -119,7 +130,7 @@ final class AssImageRenderer {
         bytes.withUnsafeMutableBufferPointer { buf in
             ass_process_chunk(track, buf.baseAddress, Int32(size), startMS, max(0, durationMS))
         }
-        cachedImage = nil
+        cachedOutput = nil
     }
 
     func flushEvents() {
@@ -129,36 +140,54 @@ final class AssImageRenderer {
             ass_flush_events(track)
         }
         readOrder = 0
-        cachedImage = nil
+        cachedOutput = nil
     }
 
-    /// Render the subtitle frame at `ms`. Returns nil when nothing is visible.
-    func render(atMS ms: Int64) -> UIImage? {
+    /// Render at `ms`. Returns nil when nothing is visible.
+    /// Reuses the previous `UIImage` when libass reports no change.
+    func render(atMS ms: Int64) -> AssRenderOutput? {
         lock.lock()
         defer { lock.unlock() }
         guard let renderer, let track else { return nil }
         var change: Int32 = 0
         guard let imageList = ass_render_frame(renderer, track, ms, &change) else {
-            cachedImage = nil
+            cachedOutput = nil
             return nil
         }
-        if change == 0, let cachedImage {
-            return cachedImage
+        if change == 0, let cachedOutput {
+            return cachedOutput
         }
-        guard let cgImage = Self.blend(imageList, width: frameWidth, height: frameHeight) else {
-            cachedImage = nil
+        guard let blended = Self.blendDirtyRect(imageList) else {
+            cachedOutput = nil
             return nil
         }
         #if canImport(UIKit)
-        let image = UIImage(cgImage: cgImage)
+        let image = UIImage(cgImage: blended.image)
         #else
-        let image = UIImage(cgImage: cgImage, size: NSSize(width: frameWidth, height: frameHeight))
+        let image = UIImage(
+            cgImage: blended.image,
+            size: NSSize(width: blended.image.width, height: blended.image.height)
+        )
         #endif
-        cachedImage = image
-        return image
+        let output = AssRenderOutput(
+            image: image,
+            origin: CGPoint(x: blended.originX, y: blended.originY),
+            canvasSize: CGSize(width: frameWidth, height: frameHeight)
+        )
+        cachedOutput = output
+        return output
     }
 
     // MARK: - Private
+
+    private static func cappedSize(width: Int, height: Int) -> (Int, Int) {
+        let longest = max(width, height)
+        let limit = max(maxRenderSide, 320)
+        guard longest > limit else { return (width, height) }
+        let scale = Double(limit) / Double(longest)
+        return (max(1, Int((Double(width) * scale).rounded())),
+                max(1, Int((Double(height) * scale).rounded())))
+    }
 
     private func configureFonts(defaultFontPath: String?) {
         guard let renderer else { return }
@@ -193,8 +222,9 @@ final class AssImageRenderer {
             }
         }
         if playX > 0, playY > 0 {
-            frameWidth = playX
-            frameHeight = playY
+            let capped = Self.cappedSize(width: playX, height: playY)
+            frameWidth = capped.0
+            frameHeight = capped.1
         }
         applyFrameSize()
     }
@@ -243,12 +273,38 @@ final class AssImageRenderer {
         return fields
     }
 
-    /// Blend linked `ASS_Image` list into a full-frame premultiplied-RGBA `CGImage`.
-    /// Color is RRGGBBTT (TT = transparency); see FFmpeg `vf_subtitles`.
-    private static func blend(_ images: UnsafeMutablePointer<ASS_Image>, width: Int, height: Int) -> CGImage? {
-        guard width > 0, height > 0 else { return nil }
-        var buffer = [UInt8](repeating: 0, count: width * height * 4)
+    private struct DirtyBlend {
+        let image: CGImage
+        let originX: Int
+        let originY: Int
+    }
+
+    /// Blend only the dirty bounding rect (not the full video frame).
+    private static func blendDirtyRect(_ images: UnsafeMutablePointer<ASS_Image>) -> DirtyBlend? {
+        var minX = Int.max
+        var minY = Int.max
+        var maxX = Int.min
+        var maxY = Int.min
         var current: UnsafeMutablePointer<ASS_Image>? = images
+        var any = false
+        while let imgPtr = current {
+            let img = imgPtr.pointee
+            current = img.next
+            guard img.w > 0, img.h > 0 else { continue }
+            any = true
+            minX = min(minX, Int(img.dst_x))
+            minY = min(minY, Int(img.dst_y))
+            maxX = max(maxX, Int(img.dst_x) + Int(img.w) - 1)
+            maxY = max(maxY, Int(img.dst_y) + Int(img.h) - 1)
+        }
+        guard any, maxX >= minX, maxY >= minY else { return nil }
+        let width = maxX - minX + 1
+        let height = maxY - minY + 1
+        // Hard cap pathological rects.
+        guard width > 0, height > 0, width <= 4096, height <= 4096 else { return nil }
+
+        var buffer = [UInt8](repeating: 0, count: width * height * 4)
+        current = images
         while let imgPtr = current {
             let img = imgPtr.pointee
             current = img.next
@@ -258,8 +314,8 @@ final class AssImageRenderer {
             let g = Int((img.color >> 16) & 0xFF)
             let b = Int((img.color >> 8) & 0xFF)
             let stride = Int(img.stride)
-            let dstX = Int(img.dst_x)
-            let dstY = Int(img.dst_y)
+            let dstX = Int(img.dst_x) - minX
+            let dstY = Int(img.dst_y) - minY
             let imgW = Int(img.w)
             let imgH = Int(img.h)
             for y in 0 ..< imgH {
@@ -286,6 +342,7 @@ final class AssImageRenderer {
                 }
             }
         }
+        // Premultiply only the dirty rect.
         let pixelCount = width * height
         for i in 0 ..< pixelCount {
             let o = i * 4
@@ -305,7 +362,7 @@ final class AssImageRenderer {
             bytesPerRow: width * 4,
             space: colorSpace,
             bitmapInfo: bitmapInfo
-        ) else { return nil }
-        return ctx.makeImage()
+        ), let cgImage = ctx.makeImage() else { return nil }
+        return DirtyBlend(image: cgImage, originX: minX, originY: minY)
     }
 }
