@@ -837,6 +837,14 @@ extension MEPlayerItem: OutputRenderSourceDelegate {
         isAudioStalled ? videoClock : audioClock
     }
 
+    /// Wall-clock interpolation for `KSClock.getTime()` must track playback rate,
+    /// otherwise 1.25x–2x under-estimates media time between audio updates and drops video frames.
+    func setClockRate(_ rate: Float) {
+        let value = Double(max(rate, 0.01))
+        audioClock.rate = value
+        videoClock.rate = value
+    }
+
     public func setVideo(time: CMTime, position: Int64) {
 //        print("[video] video interval \(CACurrentMediaTime() - videoClock.lastMediaTime) video diff \(time.seconds - videoClock.time.seconds)")
         videoClock.time = time

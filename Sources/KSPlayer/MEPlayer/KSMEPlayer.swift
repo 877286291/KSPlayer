@@ -77,6 +77,8 @@ public class KSMEPlayer: NSObject {
 
     public var playbackRate: Float = 1 {
         didSet {
+            // Keep A/V sync master advancing at the same rate as timePitch / synchronizer.
+            playerItem.setClockRate(playbackRate)
             if playbackRate != audioOutput.playbackRate {
                 audioOutput.playbackRate = playbackRate
                 if audioOutput is AudioUnitPlayer {

@@ -702,6 +702,8 @@ public extension Array {
 public struct KSClock {
     public private(set) var lastMediaTime = CACurrentMediaTime()
     public internal(set) var position = Int64(0)
+    /// Match audio `playbackRate` so wall-clock interpolation stays on the media timeline.
+    public var rate: Double = 1
     public internal(set) var time = CMTime.zero {
         didSet {
             lastMediaTime = CACurrentMediaTime()
@@ -709,6 +711,6 @@ public struct KSClock {
     }
 
     func getTime() -> TimeInterval {
-        time.seconds + CACurrentMediaTime() - lastMediaTime
+        time.seconds + (CACurrentMediaTime() - lastMediaTime) * rate
     }
 }
