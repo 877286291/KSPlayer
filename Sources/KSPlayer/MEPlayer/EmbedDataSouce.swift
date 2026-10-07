@@ -16,9 +16,22 @@ extension FFmpegAssetTrack: SubtitleInfo {
 
 extension FFmpegAssetTrack: KSSubtitleProtocol {
     public func search(for time: TimeInterval) -> [SubtitlePart] {
-        subtitle?.outputRenderQueue.search { item -> Bool in
+        // Drain the decode ring so stepped-over cues do not leak slots.
+        let decoded = subtitle?.outputRenderQueue.search { item -> Bool in
             item.part == time
         }.map(\.part) ?? []
+        // libass path: re-render at the current clock so karaoke / move / fade animate.
+        if let assRenderer {
+            let ms = Int64((time * 1000).rounded())
+            if let image = assRenderer.render(atMS: ms) {
+                let part = SubtitlePart(time, time + 0.25, attributedString: nil)
+                part.image = image
+                part.origin = .zero
+                return [part]
+            }
+            return []
+        }
+        return decoded
     }
 }
 

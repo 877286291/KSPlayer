@@ -385,6 +385,10 @@ extension MEPlayerItem {
                     }
                 }
                 naturalSize = abs(rotation - 90) <= 1 || abs(rotation - 270) <= 1 ? first.naturalSize.reverse : first.naturalSize
+                options.assVideoSize = naturalSize
+                assetTracks.filter { $0.mediaType == .subtitle }.forEach {
+                    $0.assRenderer?.setVideoSize(naturalSize)
+                }
                 options.process(assetTrack: first)
                 let frameCapacity = options.videoFrameMaxCount(fps: first.nominalFrameRate, naturalSize: naturalSize, isLive: duration == 0)
                 let track = options.syncDecodeVideo ? SyncPlayerItemTrack<VideoVTBFrame>(mediaType: .video, frameCapacity: frameCapacity, options: options) : AsyncPlayerItemTrack<VideoVTBFrame>(mediaType: .video, frameCapacity: frameCapacity, options: options)

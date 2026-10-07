@@ -32,6 +32,8 @@ public class FFmpegAssetTrack: MediaPlayerTrack {
     public let isImageSubtitle: Bool
     public var delay: TimeInterval = 0
     var subtitle: SyncPlayerItemTrack<SubtitleFrame>?
+    /// Shared with `SubtitleDecode` when libass image rendering is enabled.
+    var assRenderer: AssImageRenderer?
     // video
     public private(set) var rotation: Int16 = 0
     public var dovi: DOVIDecoderConfigurationRecord?
