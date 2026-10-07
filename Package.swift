@@ -22,8 +22,6 @@ let package = Package(
             name: "KSPlayer",
             dependencies: [
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
-                // Product name is `libass` (not Libass) in FFmpegKit Package.swift.
-                .product(name: "libass", package: "FFmpegKit"),
 //                .product(name: "Libmpv", package: "FFmpegKit"),
                 "DisplayCriteria",
             ],

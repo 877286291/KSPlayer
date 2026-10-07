@@ -20,34 +20,12 @@ class SubtitleDecode: DecodeProtocol {
     private var subtitle = AVSubtitle()
     private var startTime = TimeInterval(0)
     private let assParse = AssParse()
-    private weak var assetTrack: FFmpegAssetTrack?
-    private var assRenderer: AssImageRenderer?
 
     required init(assetTrack: FFmpegAssetTrack, options: KSOptions) {
-        self.assetTrack = assetTrack
         startTime = assetTrack.startTime.seconds
         do {
             codecContext = try assetTrack.createContext(options: options)
-            if KSOptions.enableLibass,
-               let renderer = AssImageRenderer(
-                   fontsDirectory: KSOptions.assFontsDirectory,
-                   defaultFontPath: KSOptions.assDefaultFontPath
-               )
-            {
-                if options.assVideoSize.width > 0, options.assVideoSize.height > 0 {
-                    renderer.setVideoSize(options.assVideoSize)
-                }
-                if let pointer = codecContext?.pointee.subtitle_header {
-                    let size = Int(codecContext?.pointee.subtitle_header_size ?? 0)
-                    if size > 0 {
-                        renderer.setCodecPrivate(pointer, size: size)
-                    }
-                }
-                assRenderer = renderer
-                // Keep a reference for flush/shutdown; playback search must NOT re-render
-                // on the UI tick (that caused A/V desync / stutter).
-                assetTrack.assRenderer = renderer
-            } else if let pointer = codecContext?.pointee.subtitle_header {
+            if let pointer = codecContext?.pointee.subtitle_header {
                 let subtitleHeader = String(cString: pointer)
                 _ = assParse.canParse(scanner: Scanner(string: subtitleHeader))
             }
@@ -79,7 +57,7 @@ class SubtitleDecode: DecodeProtocol {
         if duration == 0, packet.duration != 0 {
             duration = packet.assetTrack.timebase.cmtime(for: packet.duration).seconds
         }
-        var parts = text(subtitle: subtitle, start: start, duration: duration)
+        var parts = text(subtitle: subtitle)
         /// 不用preSubtitleFrame来进行更新end。而是插入一个空的字幕来更新字幕。
         /// 因为字幕有可能不按顺序解码。这样就会导致end比start小，然后这个字幕就不会被清空了。
         if parts.isEmpty {
@@ -99,32 +77,22 @@ class SubtitleDecode: DecodeProtocol {
         avsubtitle_free(&subtitle)
     }
 
-    func doFlushCodec() {
-        assRenderer?.flushEvents()
-        assetTrack?.assSubtitlePart = nil
-    }
+    func doFlushCodec() {}
 
     func shutdown() {
         scale.shutdown()
         avsubtitle_free(&subtitle)
-        assRenderer?.shutdown()
-        assRenderer = nil
-        assetTrack?.assRenderer = nil
-        assetTrack?.assSubtitlePart = nil
         if let codecContext {
             avcodec_close(codecContext)
             avcodec_free_context(&self.codecContext)
         }
     }
 
-    private func text(subtitle: AVSubtitle, start: TimeInterval, duration: TimeInterval) -> [SubtitlePart] {
+    private func text(subtitle: AVSubtitle) -> [SubtitlePart] {
         var parts = [SubtitlePart]()
         var images = [(CGRect, CGImage)]()
         var origin: CGPoint = .zero
         var attributedString: NSMutableAttributedString?
-        let startMS = Int64((start * 1000).rounded())
-        let durationMS = Int64((max(duration, 0) * 1000).rounded())
-        var fedLibass = false
         for i in 0 ..< Int(subtitle.num_rects) {
             guard let rect = subtitle.rects[i]?.pointee else {
                 continue
@@ -138,29 +106,15 @@ class SubtitleDecode: DecodeProtocol {
                 }
                 attributedString?.append(NSAttributedString(string: String(cString: text)))
             } else if let ass = rect.ass {
-                let event = String(cString: ass)
-                if let assRenderer {
-                    // Bake on the decode thread once per cue — never on the UI search tick.
-                    assRenderer.processChunk(event, startMS: startMS, durationMS: durationMS)
-                    fedLibass = true
-                } else {
-                    let scanner = Scanner(string: event)
-                    if let group = assParse.parsePart(scanner: scanner) {
-                        parts.append(group)
-                    }
+                let scanner = Scanner(string: String(cString: ass))
+                if let group = assParse.parsePart(scanner: scanner) {
+                    parts.append(group)
                 }
             } else if rect.type == SUBTITLE_BITMAP {
                 if let image = scale.transfer(format: AV_PIX_FMT_PAL8, width: rect.w, height: rect.h, data: Array(tuple: rect.data), linesize: Array(tuple: rect.linesize))?.cgImage() {
                     images.append((CGRect(x: Int(rect.x), y: Int(rect.y), width: Int(rect.w), height: Int(rect.h)), image))
                 }
             }
-        }
-        if fedLibass, let assRenderer, let output = assRenderer.render(atMS: startMS) {
-            let part = SubtitlePart(0, 0, attributedString: nil)
-            part.image = output.image
-            part.origin = output.origin
-            part.canvasSize = output.canvasSize
-            parts.append(part)
         }
         if images.count > 0 {
             let part = SubtitlePart(0, 0, attributedString: nil)

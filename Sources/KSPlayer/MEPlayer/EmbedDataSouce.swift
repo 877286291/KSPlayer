@@ -16,8 +16,6 @@ extension FFmpegAssetTrack: SubtitleInfo {
 
 extension FFmpegAssetTrack: KSSubtitleProtocol {
     public func search(for time: TimeInterval) -> [SubtitlePart] {
-        // Cheap ring-buffer lookup only. libass images are baked in SubtitleDecode
-        // on the decode thread — re-rendering here on the UI tick caused stutter / A-V desync.
         subtitle?.outputRenderQueue.search { item -> Bool in
             item.part == time
         }.map(\.part) ?? []

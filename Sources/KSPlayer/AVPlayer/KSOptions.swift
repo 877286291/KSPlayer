@@ -79,8 +79,6 @@ open class KSOptions {
     // sutile
     public var autoSelectEmbedSubtitle = true
     public var isSeekImageSubtitle = false
-    /// Video pixel size for libass `ass_set_storage_size` / frame size (set by MEPlayerItem).
-    public var assVideoSize: CGSize = .zero
     // video
     public var display = DisplayEnum.plane
     public var videoDelay = 0.0 // s
@@ -489,12 +487,6 @@ public extension KSOptions {
     static var canStartPictureInPictureAutomaticallyFromInline = true
     static var preferredFrame = true
     static var useSystemHTTPProxy = true
-    /// Directory scanned by libass for extra fonts (e.g. app-bundled CJK).
-    public static var assFontsDirectory: String?
-    /// Preferred default font file path passed to `ass_set_fonts`.
-    public static var assDefaultFontPath: String?
-    /// When true (default), embedded ASS/SSA is rendered via libass as images.
-    public static var enableLibass = true
     /// 日志级别
     static var logLevel = LogLevel.warning
     static var logger: LogHandler = OSLog(lable: "KSPlayer")

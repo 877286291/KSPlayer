@@ -15,7 +15,7 @@ public class SubtitlePart: CustomStringConvertible, Identifiable {
     public var start: TimeInterval
     public var end: TimeInterval
     public var origin: CGPoint = .zero
-    /// When non-zero, `image` is a dirty-rect of a libass canvas of this size (points/pixels).
+    /// Optional canvas size when `image` is a positioned bitmap (e.g. PGS region).
     public var canvasSize: CGSize = .zero
     public let text: NSAttributedString?
     public var image: UIImage?
