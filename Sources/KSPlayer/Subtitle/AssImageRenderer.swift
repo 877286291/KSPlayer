@@ -26,8 +26,8 @@ struct AssRenderOutput {
 ///
 /// Incomplete libass handle types are imported as `OpaquePointer`.
 final class AssImageRenderer {
-    /// Cap longest side so 4K sources don't allocate/blend huge bitmaps on the UI tick.
-    static var maxRenderSide = 1280
+    /// Cap longest side so 4K sources don't allocate/blend huge bitmaps on decode.
+    static var maxRenderSide = 960
 
     private var library: OpaquePointer?
     private var renderer: OpaquePointer?

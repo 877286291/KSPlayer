@@ -22,8 +22,6 @@ class SubtitleDecode: DecodeProtocol {
     private let assParse = AssParse()
     private weak var assetTrack: FFmpegAssetTrack?
     private var assRenderer: AssImageRenderer?
-    /// True once we've successfully fed at least one ASS chunk to libass.
-    private var usesLibass = false
 
     required init(assetTrack: FFmpegAssetTrack, options: KSOptions) {
         self.assetTrack = assetTrack
@@ -46,6 +44,8 @@ class SubtitleDecode: DecodeProtocol {
                     }
                 }
                 assRenderer = renderer
+                // Keep a reference for flush/shutdown; playback search must NOT re-render
+                // on the UI tick (that caused A/V desync / stutter).
                 assetTrack.assRenderer = renderer
             } else if let pointer = codecContext?.pointee.subtitle_header {
                 let subtitleHeader = String(cString: pointer)
@@ -79,20 +79,13 @@ class SubtitleDecode: DecodeProtocol {
         if duration == 0, packet.duration != 0 {
             duration = packet.assetTrack.timebase.cmtime(for: packet.duration).seconds
         }
-        let parts = text(subtitle: subtitle, start: start, duration: duration)
-        /// libass path: events live in the AssImageRenderer track; search() re-renders by time.
-        /// Still enqueue a lightweight marker so flush/seek drains stay consistent when needed.
-        if usesLibass, parts.isEmpty {
-            avsubtitle_free(&subtitle)
-            return
-        }
-        var emit = parts
+        var parts = text(subtitle: subtitle, start: start, duration: duration)
         /// 不用preSubtitleFrame来进行更新end。而是插入一个空的字幕来更新字幕。
         /// 因为字幕有可能不按顺序解码。这样就会导致end比start小，然后这个字幕就不会被清空了。
-        if emit.isEmpty {
-            emit.append(SubtitlePart(0, 0, attributedString: nil))
+        if parts.isEmpty {
+            parts.append(SubtitlePart(0, 0, attributedString: nil))
         }
-        for part in emit {
+        for part in parts {
             part.start = start
             if duration == 0 {
                 part.end = .infinity
@@ -108,7 +101,7 @@ class SubtitleDecode: DecodeProtocol {
 
     func doFlushCodec() {
         assRenderer?.flushEvents()
-        usesLibass = false
+        assetTrack?.assSubtitlePart = nil
     }
 
     func shutdown() {
@@ -117,6 +110,7 @@ class SubtitleDecode: DecodeProtocol {
         assRenderer?.shutdown()
         assRenderer = nil
         assetTrack?.assRenderer = nil
+        assetTrack?.assSubtitlePart = nil
         if let codecContext {
             avcodec_close(codecContext)
             avcodec_free_context(&self.codecContext)
@@ -130,6 +124,7 @@ class SubtitleDecode: DecodeProtocol {
         var attributedString: NSMutableAttributedString?
         let startMS = Int64((start * 1000).rounded())
         let durationMS = Int64((max(duration, 0) * 1000).rounded())
+        var fedLibass = false
         for i in 0 ..< Int(subtitle.num_rects) {
             guard let rect = subtitle.rects[i]?.pointee else {
                 continue
@@ -145,8 +140,9 @@ class SubtitleDecode: DecodeProtocol {
             } else if let ass = rect.ass {
                 let event = String(cString: ass)
                 if let assRenderer {
+                    // Bake on the decode thread once per cue — never on the UI search tick.
                     assRenderer.processChunk(event, startMS: startMS, durationMS: durationMS)
-                    usesLibass = true
+                    fedLibass = true
                 } else {
                     let scanner = Scanner(string: event)
                     if let group = assParse.parsePart(scanner: scanner) {
@@ -158,6 +154,13 @@ class SubtitleDecode: DecodeProtocol {
                     images.append((CGRect(x: Int(rect.x), y: Int(rect.y), width: Int(rect.w), height: Int(rect.h)), image))
                 }
             }
+        }
+        if fedLibass, let assRenderer, let output = assRenderer.render(atMS: startMS) {
+            let part = SubtitlePart(0, 0, attributedString: nil)
+            part.image = output.image
+            part.origin = output.origin
+            part.canvasSize = output.canvasSize
+            parts.append(part)
         }
         if images.count > 0 {
             let part = SubtitlePart(0, 0, attributedString: nil)
