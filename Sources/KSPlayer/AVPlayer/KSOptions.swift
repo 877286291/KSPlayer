@@ -565,9 +565,14 @@ public extension KSOptions {
                 channelCount = minChannels
             }
             #else
-            // iOS 外放是会自动有空间音频功能，但是蓝牙耳机有可能没有空间音频功能或者把空间音频给关了，。所以还是需要处理。
-            if !isSpatialAudioEnabled {
-                channelCount = minChannels
+            // iPhone/iPad: `maximumOutputNumberOfChannels` is often ≥6 even for stereo
+            // headphones / built-in speaker. Keeping 5.1/7.1 and letting AVAudioEngine
+            // downmix drops the center channel (dialogue becomes very quiet).
+            // Force a proper swresample stereo rematrix unless Spatial Audio is active.
+            if isSpatialAudioEnabled {
+                // Keep multi-channel so the system spatializer can use it.
+            } else {
+                channelCount = 2
             }
             #endif
         } else {
