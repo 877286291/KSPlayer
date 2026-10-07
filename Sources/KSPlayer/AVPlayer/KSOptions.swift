@@ -576,12 +576,13 @@ public extension KSOptions {
             // iPhone/iPad: `maximumOutputNumberOfChannels` is often ≥6 even for stereo
             // headphones / built-in speaker. Keeping 5.1/7.1 and letting AVAudioEngine
             // downmix drops the center channel (dialogue becomes very quiet).
-            // Force a proper swresample stereo rematrix unless Spatial Audio is active.
-            if isSpatialAudioEnabled {
-                // Keep multi-channel so the system spatializer can use it.
-            } else {
-                channelCount = 2
-            }
+            //
+            // Always force swresample stereo rematrix on iOS. Route
+            // `isSpatialAudioEnabled` is frequently true for AirPods / built-in
+            // speaker even when we still need a proper FC→L/R mix; keeping 5.1
+            // in that case makes dialogue nearly inaudible.
+            _ = isSpatialAudioEnabled
+            channelCount = 2
             #endif
         } else {
             channelCount = 2
